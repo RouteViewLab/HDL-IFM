@@ -80,7 +80,7 @@ Please ensure the following dependencies are installed:
 -   The datasets consist of optical imagery acquired from Arctic
     marginal ice zones.
 
--   Example data used in the paper (July 6, 2020, B4 floe sample) are
+-   Example data used in the paper (July 6, 2020, B2 floe sample) are
     provided in the main.
 
 -   Users may organize their own datasets following the structure below
@@ -136,9 +136,9 @@ python test.py \--model checkpoints/model_best.pth \--data data/test/
 This will output matched pairs, matching accuracy, and visualization
 results under the results/ folder.
 
-Example Experiment (B4 Floe, July 6, 2020)
+Example Experiment (B2 Floe, July 6, 2020)
 
-A demo script is provided to reproduce the **B4 floe matching
+A demo script is provided to reproduce the **B2 floe matching
 experiment** described in the paper.
 
 -   This experiment demonstrates the ability of the proposed framework
