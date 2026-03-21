@@ -36,8 +36,6 @@ This figure shows the variation of **Hausdorff Distance (HD)** with respect to r
 - Maximum HD (**118.07**) reflects severe mismatch  
 - Strong nonlinearity indicates high sensitivity to rotation  
 
-👉 **Insight:**  
-Rotation drastically alters geometric similarity, making direct matching unreliable.
 
 ---
 
@@ -54,14 +52,6 @@ Rotation drastically alters geometric similarity, making direct matching unrelia
 - Ice floe is **well aligned**  
 - Matches become **structured and reliable**  
 - Significant improvement in accuracy  
-
----
-
-### 💡 Key Finding
-
-This experiment demonstrates that:
-
-> **Rotation is a critical factor affecting feature matching performance, and neglecting it leads to severe degradation in matching accuracy.**
 
 ---
 
@@ -163,7 +153,7 @@ experiment** described in the paper.
 ## **Acknowledgments**
 
 The codes are based
-on [S](https://github.com/hanyoseob/pytorch-noise2void)uperPoint and [S](https://github.com/DegangWang97/IEEE_TGRS_BS3LNet)uperGlue.
+on [SuperPoint](https://github.com/hanyoseob/pytorch-noise2void) and [SuperGlue](https://github.com/DegangWang97/IEEE_TGRS_BS3LNet).
 Thanks for their awesome work.
 
 ## **Contact**
