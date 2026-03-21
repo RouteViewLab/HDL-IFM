@@ -1,0 +1,262 @@
+import sys
+sys.path.append("./")
+import numpy as np
+import torch
+import os
+import cv2
+from scipy.spatial.distance import cdist
+from superglue_train.models.superpoint import SuperPoint # official implement
+import superglue_train.dataset.render as render
+import pickle
+import multiprocessing
+
+import argparse
+
+def mat2map(M, W, H):
+    '''build reverse map from linear projection matrix'''
+    M_inv = np.linalg.inv(M)
+    xx, yy = np.meshgrid(np.arange(W),np.arange(H))
+    map1 = np.stack([xx, yy, np.ones([H,W])], axis=2).astype(np.float32)
+    mapW = map1.reshape((H*W,3)).dot(M_inv.T).reshape((H,W,3)).astype(np.float32) # multiply M_inv
+    mapW = mapW[:,:,:2] / np.stack([mapW[:,:,2]]*2, axis=2) # remove homogeneous
+    return mapW
+
+def calculate_shift_x(x):
+    x = np.maximum(x, 1e-8)
+    shift_x = np.sqrt(1/x + 1) * x + 1/2 * np.log((2 * np.sqrt(1/x + 1) + 2) * x + 1)
+    return shift_x
+
+def util_WarpMap(h,w, maxPixels=4, steps=4):
+    xx, yy = np.meshgrid(np.arange(w),np.arange(h))
+    for step in range(steps):
+        k = np.random.random()*4+1 # 3-13
+        r1 = np.random.random(2)
+        pixels = (r1[0]*2-1)*maxPixels # max shift_y pixels on curve
+
+        k2 = (1-1/np.sqrt(k))*np.cos(np.arctan(1/np.sqrt(k))) # normalized value on shift_y
+
+        x = xx/w*k if r1[1]>0.5 else (w-xx)/w*k
+        sign = 1 if r1[1]>0.5 else -1
+
+        shift_x = np.sqrt(1/x+1)*x+1/2*np.log((2*np.sqrt(1/x+1)+2)*x+1) # distance integrate of model y
+        shift_x = shift_x*sign
+        shift_y = (np.sqrt(x) - x / np.sqrt(k))/k2*pixels # page curve model y
+        xx = xx - shift_x
+        yy = yy - shift_y
+    map1 = np.stack([xx, yy], axis=2).astype(np.float32)
+    return map1
+
+def remapPropagate(map1, map2):
+    map3 = np.empty(map1.shape, dtype=np.float32)
+    map3[:,:,0] = cv2.remap(map1[:,:,0], map2, None, cv2.INTER_LINEAR, None, borderValue=np.nan)
+    map3[:,:,1] = cv2.remap(map1[:,:,1], map2, None, cv2.INTER_LINEAR, None, borderValue=np.nan)
+    return map3
+
+def simpleWarp(image, W, H):
+    return image, None, None
+
+def pictureBookWarpAndRender(image, W, H, scale=1.0, borderValue=128):
+    return image, None, None, None
+
+def sampleHand(warped, hand_file, W, H):
+    if hand_file is None:
+        return warped, None
+    return warped, None
+
+def mp_warp(task):
+    idx, image_file, image_file_neg, back_file, hand_file, isNegSample, W, H, save_path, saveFlag = task
+    image = cv2.imread(image_file, cv2.IMREAD_GRAYSCALE)
+    image = cv2.resize(image, (W, H))
+    if isNegSample:
+        warped = cv2.imread(image_file_neg, cv2.IMREAD_GRAYSCALE)
+        warped = cv2.resize(warped, (W, H))
+    else:
+        warped = image.copy()
+    warped, handMask = sampleHand(warped, hand_file, W, H)
+    if saveFlag:
+        warped_file = save_path+str(idx)+".png"
+        cv2.imwrite(warped_file, warped)
+    image_f = image.astype(np.float32)/255
+    warped_f = warped.astype(np.float32)/255
+    return image_f, warped_f, None, handMask, isNegSample
+
+class DataBuilder(object):
+    def __init__(self, config, save_path_warped, save_path_sp, numProcess=1):
+        self.superpoint = SuperPoint(config).cuda().eval()
+        if '.tar' in config['weights_path']:#适配superpoint中训练出来的模型
+            self.superpoint.load_state_dict(torch.load(config['weights_path'])['model_state_dict'])
+        else:
+            self.superpoint.load_state_dict(torch.load(config['weights_path']))
+        self.feature_dim = config['feature_dim']
+        self.max_keypoints = config['max_keypoints']
+        self.keypoint_threshold = config['keypoint_threshold']
+        self.nms_radius = config['nms_radius']
+        self.save_path_warped = save_path_warped
+        self.save_path_sp = save_path_sp
+        if not os.path.isdir(save_path_warped):
+            os.mkdir(save_path_warped)
+        if not os.path.isdir(save_path_sp):
+            os.mkdir(save_path_sp)
+        self.pool = multiprocessing.Pool(numProcess)
+
+    def extractSP(self, imageList):
+        N = len(imageList)
+        kpmax = self.max_keypoints
+        data = np.stack(imageList, axis=0)
+        data = torch.from_numpy(data[:, np.newaxis,:,:])
+        data = data.cuda()
+        with torch.no_grad():
+            pred = self.superpoint({"image":data})
+        spPackList = []
+        for i in range(N):
+            kp1_np = np.zeros([self.max_keypoints, 2])
+            descs1 = np.zeros([self.feature_dim, self.max_keypoints])
+            scores1_np = np.zeros([self.max_keypoints])
+            n1 = len(pred['keypoints'][i])
+            kp1_np[:n1] = pred['keypoints'][i].cpu().numpy()
+            descs1[:,:n1] = pred['descriptors'][i].cpu().numpy()
+            scores1_np[:n1] = pred['scores'][i].cpu().numpy()
+            spPackList.append((n1, kp1_np, descs1, scores1_np))
+        return spPackList
+
+    def match(self, sp_pack1, sp_pack2, mapW, isNegSample, image, warped, handMask, debug=0):
+        nf = self.max_keypoints
+        n1, kp1_np, descs1, scores1_np = sp_pack1
+        n2, kp2_np, descs2, scores2_np = sp_pack2
+        if isNegSample or n1==0 or n2==0:
+            numMatch = 0
+            numMiss = nf
+            MN2 = np.vstack([np.arange(nf), nf * np.ones(nf, dtype=np.int64)]) # excluded kp1 --> last index in matrix
+            MN3 = np.vstack([nf * np.ones(nf, dtype=np.int64), np.arange(nf)])
+            all_matches = np.hstack([MN2, MN3]).T
+            if debug:
+                cv2.imshow('image', image)
+                cv2.imshow('warped', warped)
+                cv2.waitKey()
+            return all_matches, numMatch, numMiss
+        # reverse project by non-linear reverse map
+        indices = kp2_np[:n2].astype(np.int32).T
+        kp2_projected = mapW[indices[1], indices[0]] if mapW is not None else kp2_np[:n2]
+        kp2_projected = np.vstack([kp2_projected, np.zeros((nf-n2,2))])
+        dists = cdist(kp1_np[:n1], kp2_projected[:n2])
+        dists[np.isnan(dists)]=np.inf
+
+        min1 = np.argmin(dists, axis=0) # kp1 which is closest from range(len(kp2))
+        min2 = np.argmin(dists, axis=1) # kp2 which is closest from range(len(kp1))
+        min2v = np.min(dists, axis=0) # closest distance of range(len(kp2))
+
+        kp2_mutual_close = min2[min1] == np.arange(n2)
+        if handMask is not None:
+            kp2_blocked = ~handMask[indices[1], indices[0]] # kp2, not covered by hand
+            kp2_mutual_close = np.logical_and(kp2_mutual_close, kp2_blocked)
+
+        matches2 = np.where(np.logical_and(kp2_mutual_close, min2v < 3))[0] # kp2
+        matches1 = min1[matches2]
+        missing1 = np.setdiff1d(np.arange(nf), matches1) # kp1 which are excluded
+        missing2 = np.setdiff1d(np.arange(nf), matches2) # kp2 which are excluded
+
+        if debug: # visualize
+            matches_dmatch = []
+            if not isNegSample:
+                for i, idx2 in enumerate(matches2):
+                    idx1 = matches1[i]
+                    dmatch = cv2.DMatch(min1[idx2], idx2, 0.0)
+                    matches_dmatch.append(dmatch)
+            kp1 = [cv2.KeyPoint(p[0], p[1], 0) for p in kp1_np]
+            # kp1 = [cv2.KeyPoint(p[0], p[1], 0) for p in kp2_projected]
+            kp2 = [cv2.KeyPoint(p[0], p[1], 0) for p in kp2_np]
+            out = cv2.drawMatches((image * 255).astype(np.uint8), kp1, (warped * 255).astype(np.uint8), kp2,
+                                  matches_dmatch, None)
+            # cv2.imshow('a', out)
+            # cv2.imshow('image', image)
+            # cv2.imshow('warped', warped)
+            # cv2.waitKey()
+
+        numMatch = len(matches1)
+        numMiss = nf - numMatch
+        lossWeightMiss = 0.2
+        MN = np.vstack([matches1, matches2])
+        MN2 = np.vstack([missing1, nf * np.ones(numMiss, dtype=np.int64)])  # excluded kp1 --> last index in matrix
+        MN3 = np.vstack([nf * np.ones(numMiss, dtype=np.int64), missing2])
+        MN4 = np.zeros([2, numMatch], dtype=np.int64)  # zero-pad for batch training
+        all_matches = np.hstack([MN, MN2, MN3, MN4]).T
+        return all_matches, numMatch, numMiss
+
+    def build(self, idxList, fileNameList, handFileList, saveFlag=False, debug=1):
+        W, H = (640,549)
+        batchSize = len(idxList)
+
+        if handFileList is not None:
+            handFiles = [handFileList[i] for i in np.random.randint(0, len(handFileList), (batchSize))]
+        else:
+            handFiles = [None] * batchSize
+        # even idx as negative sample, force zero match
+        taskList = [(idx, fileNameList[idx], fileNameList[idx - 1], fileNameList[idx - 2], handFiles[i],
+                     idx % 2 == 0, W, H, self.save_path_warped, saveFlag) for i, idx in enumerate(idxList)]
+        resultList = self.pool.map(mp_warp, taskList)
+
+        imageList = []
+        mapWList = []
+        negList = []
+        handMaskList = []
+        for image_f, warped_f, mapW, handMask, isNegSample in resultList:
+            imageList += [image_f, warped_f]
+            mapWList.append(mapW)
+            handMaskList.append(handMask)
+            negList.append(isNegSample)
+
+        spPackList = self.extractSP(imageList)
+
+        dict1List = []
+        for i, idx in enumerate(idxList):
+            spPack1 = spPackList[i * 2]
+            spPack2 = spPackList[i * 2 + 1]
+            mapW = mapWList[i]
+            isNegSample = negList[i]
+            handMask = handMaskList[i]
+
+            n1, kp1_np, descs1, scores1_np = spPack1
+            n2, kp2_np, descs2, scores2_np = spPack2
+
+            all_matches, numMatch, numMiss = self.match(spPack1, spPack2, mapW, isNegSample,
+                                                        imageList[i * 2], imageList[i * 2 + 1], handMask,
+                                                        debug=debug)
+
+            image_file = fileNameList[idx]
+            warped_file = self.save_path_warped + str(idx) + ".png"
+            dict1 = {
+                'keypoints0': torch.Tensor(kp1_np),
+                'keypoints1': torch.Tensor(kp2_np),
+                'descriptors0': torch.Tensor(descs1),
+                'descriptors1': torch.Tensor(descs2),
+                'scores0': torch.Tensor(scores1_np),
+                'scores1': torch.Tensor(scores2_np),
+
+                'image_file': image_file,
+                'warped_file': warped_file,
+                'shape0': torch.Tensor([H, W]),
+                'shape1': torch.Tensor([H, W]),
+                'all_matches': all_matches,
+                'num_match_list': torch.Tensor([numMatch + 2 * numMiss])
+            }
+            if saveFlag:
+                with open(self.save_path_sp + str(idx) + '.pkl', 'wb') as f:
+                    pickle.dump(dict1, f)
+            dict1List.append(dict1)
+        return dict1List
+
+    def buildAll(self, train_path, hand_path="", batchSizeMax=64, saveFlag=False, debug=1):
+        files = [root + "/" + name for root, dirs, files in os.walk(train_path, topdown=False) for name in files if
+                 name[-4:] == ".png"]
+        hands = None
+        if len(hand_path) > 0:
+            hands = [hand_path + name for name in os.listdir(hand_path)]
+        N = len(files)
+        print("{} images in fileList".format(N))
+        idxList = np.arange(N)
+        i = 0
+        while i < N - 1:
+            batchSize = min(batchSizeMax, N - i)
+            self.build(idxList[i:i + batchSize], files, hands, saveFlag=saveFlag, debug=debug)
+            i += batchSize
+            print("building training set {}/{}".format(i, N))
