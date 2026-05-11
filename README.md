@@ -1,7 +1,6 @@
-# A Hausdorff-Guided Deep Learning Approach for Monitoring the Motion of Rotating Arctic Ice Floes
+# A Hausdorff-Guided Deep Learning Approach for Tracking the Motion of Rotating Arctic Ice Floes
 
-- Authors: Adan Wu, Tao Che*, Chengzhu Ji, Xiaowen Zhu, Jinlei Chen, Qingchao Xu, Qun Gu, Rui Zhang,  
-Kaihui Zhang, Lei Fu, and Shengpeng Chen  
+- Authors: Adan Wu, Tao Che*, Chengzhu Ji, Xiaowen Zhu, Rui Zhang, Jinlei Chen, Liuhao Wang, Qingchao Xu and Shengpeng Chen  
 
 - Key Laboratory of Cryospheric Science and Frozen Soil Engineering,  
 Heihe Remote Sensing Experimental Research Station, Northwest  
