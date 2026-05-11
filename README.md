@@ -7,8 +7,8 @@ Heihe Remote Sensing Experimental Research Station, Northwest
 Institute of Eco-Environment and Resources, Chinese Academy of  
 Sciences, Lanzhou 730000, China  
 
-The code in this toolbox implements the  
-[**"A Hausdorff-Guided Deep Learning Approach for Tracking the Motion of Rotating Arctic Ice Floes"**]
+The code in this toolbox implements the method proposed in the paper  
+"A Hausdorff-Guided Deep Learning Approach for Motion Monitoring of Rotating Arctic Ice Floes". 
 More specifically, it is detailed as follows.
 
 ![Flow chart](https://github.com/RouteViewLab/A-Hausdorff-Guided-Deep-Learning-Approach-for-Monitoring-the-Motion-of-Rotating-Arctic-Ice-Floes/raw/main/Flow%20chat.png)
